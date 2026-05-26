@@ -1,0 +1,99 @@
+.watermark {
+    display: none !important;
+  }
+
+#readme-button {
+  display: none;
+}
+
+/* Hide favicon in the login page */
+/* 
+img[src*="favicon"] {
+  display: none !important;
+}  */
+
+
+/* Hide right empty pane in the login page */
+div.relative.hidden.bg-muted.lg\:block {
+  display: none !important;
+}
+
+/* Center login form when right pane is hidden */
+.grid.min-h-svh {
+  display: flex !important;
+  justify-content: center !important;
+}
+
+.grid.min-h-svh > .flex.flex-col {
+  width: 100% !important;
+  max-width: 480px !important;
+  align-items: center !important;
+}
+
+/* Login title styling */
+.grid.min-h-svh h1.text-2xl {
+  font-size: 1.1rem !important;
+  font-weight: 500 !important;
+  color: #64748b !important;
+  letter-spacing: 0.02em !important;
+}
+
+/* Login button styling */
+.grid.min-h-svh form button {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  transition: box-shadow 0.2s ease !important;
+}
+
+.grid.min-h-svh form button:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+
+.version-footer {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 4px;
+  z-index: 20;
+  background: transparent;
+  border: none;
+  pointer-events: none;
+}
+
+.version-footer-text {
+  margin: 0;
+  padding: 0;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #b7bfcb;
+}
+
+.version-label {
+  color: #adb6c2;
+}
+
+.version-divider {
+  display: inline-block;
+  width: 1px;
+  height: 11px;
+  margin: 0 10px -1px;
+  background-color: #d9dfe7;
+}
+
+@media (max-width: 640px) {
+  .version-footer-text {
+    font-size: 11px;
+  }
+}
+
+/* Response time statistics — subtle styling */
+.markdown-body em:last-child,
+.message-content em:last-child,
+[class*="message"] em:last-child {
+  color: #c0c7d0 !important;
+  font-size: 0.7rem !important;
+  font-style: normal !important;
+  font-weight: 400 !important;
+}
