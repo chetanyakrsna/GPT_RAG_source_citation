@@ -1,0 +1,6 @@
+{
+  "tag": "v2.4.0",
+  "release": "release/2.4.0",
+  "repo": "https://github.com/azure/gpt-rag.git",
+  "components": []
+}
