@@ -162,7 +162,86 @@
     },
 
     "containerAppsList": {
-      "value": []
+      "value": [
+        {
+          "name": null,
+          "external" : true,
+          "service_name": "orchestrator",
+          "target_port": 8080,
+          "profile_name": "main",
+          "min_replicas": 1,
+          "max_replicas": 1,
+          "canonical_name": "ORCHESTRATOR_APP",
+          "roles": [
+            "AppConfigurationDataReader",
+            "CognitiveServicesUser",
+            "CognitiveServicesOpenAIUser",
+            "AcrPull",
+            "CosmosDBBuiltInDataContributor",
+            "SearchIndexDataReader",
+            "StorageBlobDataReader",
+            "KeyVaultSecretsUser"
+          ]
+        },
+        {
+          "name": null,
+          "external" : true,
+          "service_name": "frontend",
+          "target_port": 8080,
+          "profile_name": "main",
+          "min_replicas": 1,
+          "max_replicas": 1,
+          "canonical_name": "FRONTEND_APP",          
+          "roles": [
+            "AppConfigurationDataReader",
+            "AcrPull",
+            "StorageBlobDataReader",
+            "StorageBlobDelegator",
+            "KeyVaultSecretsUser"
+          ]
+        },
+        {
+          "name": null,
+          "external" : true,
+          "service_name": "dataingest",
+          "target_port": 8080,
+          "profile_name": "main",
+          "min_replicas": 1,
+          "max_replicas": 1,
+          "canonical_name": "DATA_INGEST_APP",
+          "roles": [
+            "AppConfigurationDataReader",
+            "CognitiveServicesUser",
+            "CognitiveServicesOpenAIUser",
+            "CosmosDBBuiltInDataContributor",
+            "AcrPull",
+            "SearchIndexDataContributor",
+            "StorageBlobDataContributor",
+            "KeyVaultSecretsUser"
+          ]
+        },
+        {
+          "name": null,
+          "external" : true,
+          "service_name": "mcp",
+          "target_port": 8080,
+          "profile_name": "main",
+          "min_replicas": 1,
+          "max_replicas": 1,
+          "canonical_name": "MCP_APP",
+          "roles": [
+            "AppConfigurationDataReader",
+            "CognitiveServicesUser",
+            "CognitiveServicesOpenAIUser",
+            "CosmosDBBuiltInDataContributor",
+            "AcrPull",
+            "SearchIndexDataContributor",
+            "StorageBlobDataContributor",
+            "StorageQueueDataContributor",
+            "KeyVaultSecretsUser"
+          ]
+        }
+      ]
     }
   }
 }
