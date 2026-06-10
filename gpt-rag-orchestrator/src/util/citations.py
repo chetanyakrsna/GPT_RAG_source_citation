@@ -7,12 +7,50 @@ SingleAgentRAGStrategyV1 so that any strategy can reuse them.
 """
 
 import re
+from urllib.parse import unquote
 
 from azure.ai.agents.models import MessageDeltaChunk
 
 # Pre-compiled regex for citation placeholders (e.g., 【7:0†source】)
 # Compiled once at module load for better performance
 CITATION_PLACEHOLDER_PATTERN = re.compile(r'【(\d+):(\d+)†[^】]*】')
+
+# Source documents whose citation link/text should be hidden entirely.
+# Matched (case-insensitively) against the document title and the base file
+# name found in the source URL/filepath. Retrieval is never affected — only the
+# rendered citation is suppressed.
+_HIDDEN_SOURCE_NAMES = {"frequently asked questions"}
+
+
+def _normalize_source_name(value: str) -> str:
+    """Return the lower-cased, URL-decoded base file name (no extension/query)."""
+    if not value:
+        return ""
+    text = value.strip()
+    # Drop any query string (e.g. SAS token) and fragment.
+    text = text.split("?", 1)[0].split("#", 1)[0]
+    # Keep only the last path segment.
+    text = text.replace("\\", "/").rstrip("/").split("/")[-1]
+    # Decode percent-encoding (e.g. %20 -> space).
+    text = unquote(text)
+    # Strip a trailing file extension.
+    if "." in text:
+        text = text.rsplit(".", 1)[0]
+    return text.strip().lower()
+
+
+def should_suppress_source_link(title: str, url: str = "", filepath: str = "") -> bool:
+    """Return True when a citation should be hidden entirely (no link, no text).
+
+    A citation is suppressed when the document title, the source URL file name,
+    or the filepath matches a known hidden source (e.g. the FAQ document). This
+    only removes the rendered citation — the document content is still provided
+    to the model, so retrieval/answer quality is unaffected.
+    """
+    for candidate in (title, url, filepath):
+        if _normalize_source_name(candidate) in _HIDDEN_SOURCE_NAMES:
+            return True
+    return False
 
 
 def truncate_title(title: str, max_length: int = 30) -> str:
@@ -107,6 +145,10 @@ def process_bing_citations(delta: MessageDeltaChunk) -> str:
             title = url
 
         if url and placeholder and placeholder in text:
+            if should_suppress_source_link(title, url):
+                # Hidden source (e.g. FAQ): drop the placeholder entirely.
+                text = text.replace(placeholder, "")
+                continue
             display_title = truncate_title(title, 30)
             citation = f"[{display_title}]({url})"
             text = text.replace(placeholder, citation)

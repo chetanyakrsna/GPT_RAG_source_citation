@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from util.citations import (
     CITATION_PLACEHOLDER_PATTERN,
     process_bing_citations,
+    should_suppress_source_link,
     truncate_title,
 )
 
@@ -121,3 +122,48 @@ class TestProcessBingCitations:
         delta = _make_delta("See 【2:0†ref】", annotations=[ann])
         result = process_bing_citations(delta)
         assert "https://example.com/page" in result
+
+    def test_faq_url_citation_is_plain_text(self):
+        ann = {
+            "type": "url_citation",
+            "text": "【3:0†source】",
+            "url_citation": {
+                "url": "https://contoso.blob.core.windows.net/docs/Frequently%20Asked%20Questions.pdf?sv=2025-01-01&sig=abc123",
+                "title": "Frequently Asked Questions",
+            },
+        }
+        delta = _make_delta("Help Desk info 【3:0†source】", annotations=[ann])
+        result = process_bing_citations(delta)
+        assert "[Frequently Asked Questions](https://contoso.blob.core.windows.net/docs/Frequently%20Asked%20Questions.pdf?sv=2025-01-01&sig=abc123)" not in result
+        assert "Frequently Asked Questions" not in result
+        assert result == "Help Desk info "
+
+
+class TestSuppressSourceLink:
+    def test_suppresses_exact_hidden_source_title(self):
+        assert should_suppress_source_link(
+            "Frequently Asked Questions",
+            "https://contoso.sharepoint.com/sites/docs/faq-page",
+            filepath="",
+        )
+
+    def test_does_not_suppress_longer_faq_title(self):
+        assert not should_suppress_source_link(
+            "Frequently Asked Questions for Parents",
+            "https://dept.example.gov/family-services-overview",
+            filepath="",
+        )
+
+    def test_does_not_suppress_non_matching_document(self):
+        assert not should_suppress_source_link(
+            "Directorio - Departamento de Educación de PR",
+            "https://contoso.sharepoint.com/sites/docs/directory",
+            filepath="",
+        )
+
+    def test_suppresses_when_sas_url_contains_faq_name(self):
+        assert should_suppress_source_link(
+            "Help Desk Contact",
+            "https://contoso.blob.core.windows.net/docs/Frequently%20Asked%20Questions.pdf?sv=2025-01-01&sig=abc123",
+            filepath="",
+        )

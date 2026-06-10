@@ -37,6 +37,7 @@ from .agent_strategies import AgentStrategies
 from dependencies import get_config
 from connectors.search import get_search_client
 from connectors.aifoundry import get_genai_client
+from util.citations import should_suppress_source_link
 from openai import BadRequestError
 
 # Module-level singleton for AgentsClient — eliminates per-request TCP/TLS + token overhead
@@ -268,11 +269,18 @@ class SingleAgentRAGStrategyV2(BaseAgentStrategy):
             {"role": "user", "content": user_message}
         ]
         
-        # Optional: Append history from CosmosDB conversation if we want context
+        # Optional: Append history from CosmosDB conversation if we want context.
+        # Stored messages use {"role", "text"}; the OpenAI API expects {"role", "content"}.
+        # Insert the last 5 turns between the system prompt and the current user message,
+        # preserving their original chronological order.
         history = self.conversation.get("messages", [])
         if history:
-             for msg in history[-5:]: # Keep last 5 for speed
-                 messages.insert(1, msg)
+             recent = history[-5:]  # Keep last 5 for speed
+             for offset, msg in enumerate(recent):
+                 content = msg.get("content") or msg.get("text", "")
+                 if not content:
+                     continue
+                 messages.insert(1 + offset, {"role": msg.get("role", "user"), "content": content})
                  
         try:
              # Fast streaming completion
@@ -490,11 +498,17 @@ class SingleAgentRAGStrategyV2(BaseAgentStrategy):
         for idx, doc in enumerate(results, start=1):
             title = doc.get("source_title") or doc.get("title") or "reference"
             url = doc.get("source_url") or doc.get("link") or ""
+            filepath = doc.get("filepath") or ""
             content = doc.get("content") or ""
             if not content:
                 continue
             ref_key = f"[{idx}]"
-            ref_map[ref_key] = (title, url)
+            # Keep the content for the model (retrieval is unaffected), but hide
+            # the citation link/text for known hidden sources (e.g. the FAQ file).
+            if should_suppress_source_link(title, url, filepath):
+                ref_map[ref_key] = ("", "")
+            else:
+                ref_map[ref_key] = (title, url)
             header = f"### {ref_key} {title}"
             parts.append(f"{header}\n{content}")
 

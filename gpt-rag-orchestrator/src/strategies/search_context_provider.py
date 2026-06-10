@@ -13,11 +13,14 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, MutableSequence, Sequence
 from typing import Any, Optional
+from urllib.parse import quote
 
 from agent_framework import ChatMessage, Context, ContextProvider, Role
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.models import VectorizedQuery, QueryType, QueryCaptionType
+
+from util.citations import should_suppress_source_link
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,10 @@ _CONTEXT_PROMPT = (
     "Each document starts with a header line in the format: ### [Document Title](source_url). "
     "Base your answer on these documents.\n\n"
     "**Citation rules:**\n"
+    "- When your answer uses a document's information, you MUST cite it. But cite ONLY documents you actually used — "
+    "do NOT cite a document just because it appears below, and do NOT borrow an unrelated document's link just to have a citation.\n"
+    "- If the information you used comes from a document whose ### header has NO link (title/URL hidden), answer normally with NO citation. "
+    "Do NOT substitute another document's link in its place.\n"
     "- ONLY cite using the document title and source_url from the ### header lines above.\n"
     "- Format: [Document Title](source_url) — use the EXACT title and full URL from the header.\n"
     "- The source_url is a full blob storage URL — always use it as-is for the link target.\n"
@@ -142,8 +149,19 @@ class SearchContextProvider(ContextProvider):
                 parts: list[str] = []
                 async for doc in results:
                     filepath = doc.get("filepath") or ""
-                    source_title = doc.get("source_title") or "Unknown"
+                    source_title = doc.get("source_title") or doc.get("title") or "Document"
                     source_url = doc.get("source_url") or ""
+                    # Fallback when source_url is missing (e.g. SharePoint documents
+                    # store their link in the `url` field). Blob storage URLs need a
+                    # SAS token to be reachable, so for those defer to filepath (the UI
+                    # turns it into a time-limited SAS URL); all other sources (e.g.
+                    # SharePoint, websites) use the full url directly.
+                    if not source_url:
+                        raw_url = doc.get("url") or ""
+                        if raw_url and "blob.core.windows.net" not in raw_url.lower():
+                            source_url = raw_url
+                        elif filepath:
+                            source_url = quote(filepath, safe="/")
                     metadata_storage_name = doc.get("metadata_storage_name") or ""
                     content = doc.get("content") or ""
                     logger.info(
@@ -157,7 +175,15 @@ class SearchContextProvider(ContextProvider):
                         continue
                     if len(content) > self._max_content_chars:
                         content = content[:self._max_content_chars] + "..."
-                    header = f"### [{source_title}]({source_url})" if source_url else f"### {source_title}"
+                    # Hide the citation for known hidden sources (e.g. the FAQ
+                    # document). Retrieval is unaffected — the content is still sent
+                    # to the model, but neither the title nor a source_url is exposed,
+                    # so the model has nothing to render as a citation and the source
+                    # stays fully hidden from the user.
+                    if should_suppress_source_link(source_title, source_url, filepath):
+                        header = "###"
+                    else:
+                        header = f"### [{source_title}]({source_url})" if source_url else f"### {source_title}"
                     parts.append(f"{header}\n{content}")
         except Exception as e:
             logger.error("[SearchContextProvider] Search failed in %.2fs: %s", time.time() - search_start, e)

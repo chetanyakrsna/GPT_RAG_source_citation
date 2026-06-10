@@ -3,6 +3,7 @@ import logging
 import json
 import time
 import hashlib
+from urllib.parse import quote
 from typing import Optional, Any, Dict, List
 from pydantic import BaseModel
 
@@ -538,7 +539,18 @@ class SearchClient:
             results_list = []
             for result in search_results.get('value', []):
                 title = result.get('source_title') or result.get('title', 'reference') or 'reference'
-                source_url = result.get('source_url') or result.get('url', '') or result.get('filepath', '') or ''
+                source_url = result.get('source_url') or ''
+                if not source_url:
+                    raw_url = result.get('url', '') or ''
+                    filepath = result.get('filepath', '') or ''
+                    # Blob storage URLs require SAS to be accessible — the UI generates
+                    # a time-limited SAS URL from filepath, so skip the raw blob URL and
+                    # let filepath drive the link. For all other sources (e.g. SharePoint)
+                    # use the full url directly.
+                    if raw_url and 'blob.core.windows.net' not in raw_url.lower():
+                        source_url = raw_url
+                    elif filepath:
+                        source_url = quote(filepath, safe='/')
                 content = result.get('content', '')
                 
                 # Debug log each document with formatted output (remove line breaks)

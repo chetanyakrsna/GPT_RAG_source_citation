@@ -87,6 +87,11 @@ class SharePointIndexer:
         formats = (self.cfg.files_format or "pdf,docx,pptx")
         self._allowed_exts = {f.strip().lower().lstrip('.') for f in formats.split(',') if f and f.strip()}
 
+        # Document libraries should index file content by default, not list-item body pages (DispForm.aspx).
+        self._index_doclib_item_body = bool(
+            self._app.get("SHAREPOINT_INDEX_DOC_LIBRARY_ITEM_BODY", False, type=bool)
+        )
+
         # AOAI limits
         aoai_max_concurrency = int(self._app.get("AOAI_MAX_CONCURRENCY", 2, type=int))
         self._aoai_sem = asyncio.Semaphore(aoai_max_concurrency)
@@ -104,6 +109,52 @@ class SharePointIndexer:
         self._collection_gather_timeout_s = _get_setting_float("LIST_GATHER_TIMEOUT_SECONDS", 7200.0)  # 2 hours for large collections
         self._run_summary_timeout_s = _get_setting_float("RUN_SUMMARY_TIMEOUT_SECONDS", 60.0)
         self._run_summary_total_timeout_s = _get_setting_float("RUN_SUMMARY_TOTAL_TIMEOUT_SECONDS", 90.0)
+
+    @staticmethod
+    def _normalize_folder_path(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = str(value).strip().replace("\\", "/").strip("/")
+        return cleaned.casefold() if cleaned else None
+
+    @staticmethod
+    def _drive_item_parent_path(drive_item: Dict[str, Any]) -> str:
+        parent_path = ((drive_item.get("parentReference") or {}).get("path") or "").replace("\\", "/")
+        if "root:/" in parent_path:
+            relative = parent_path.split("root:/", 1)[1]
+        elif "root:" in parent_path:
+            relative = parent_path.split("root:", 1)[1]
+        else:
+            relative = parent_path
+        return relative.strip("/")
+
+    @staticmethod
+    def _is_path_in_folder_scope(parent_path: str, folder_path: Optional[str]) -> bool:
+        normalized_folder = SharePointIndexer._normalize_folder_path(folder_path)
+        if not normalized_folder:
+            return True
+
+        normalized_parent = SharePointIndexer._normalize_folder_path(parent_path) or ""
+        if not normalized_parent:
+            return False
+
+        if normalized_parent == normalized_folder or normalized_parent.startswith(f"{normalized_folder}/"):
+            return True
+
+        # Match when one side includes extra leading path segments
+        # (e.g., configured "documentos compartidos/website" vs drive parent "website/..." or vice versa).
+        parent_segments = [part for part in normalized_parent.split("/") if part]
+        for idx in range(1, len(parent_segments)):
+            parent_tail = "/".join(parent_segments[idx:])
+            if parent_tail == normalized_folder or parent_tail.startswith(f"{normalized_folder}/"):
+                return True
+
+        folder_segments = [part for part in normalized_folder.split("/") if part]
+        for idx in range(1, len(folder_segments)):
+            folder_tail = "/".join(folder_segments[idx:])
+            if normalized_parent == folder_tail or normalized_parent.startswith(f"{folder_tail}/"):
+                return True
+        return False
 
     def _log_event(self, level: int, event: str, **fields: Any) -> None:
         """Emit a structured log line that is easy to query via App Insights."""
@@ -355,6 +406,7 @@ class SharePointIndexer:
                         "listId": list_id or None,
                         "listName": list_name or None,
                         "filter": (item.get("filter") or "").strip() or None,
+                        "folderPath": (item.get("folderPath") or item.get("folderpath") or "").strip() or None,
                         "fields": fields,
                         "exclude": exclude,
                         "category": category,
@@ -935,6 +987,7 @@ class SharePointIndexer:
         file_name: str,
         web_url: str,
         last_mod: datetime,
+        filepath: str = "",
         category: str = "",
         security_user_ids: Optional[List[str]] = None,
         security_group_ids: Optional[List[str]] = None,
@@ -961,7 +1014,7 @@ class SharePointIndexer:
             "relatedImages": chunk.get("relatedImages", []),
             "summary": chunk.get("summary", ""),
             "category": (category or chunk.get("category", "")),  # <---
-            "filepath": "",
+            "filepath": filepath or "",
             "imageCaptions": chunk.get("imageCaptions", ""),
             "source": "sharepoint-list",
         }
@@ -977,6 +1030,8 @@ class SharePointIndexer:
         collection_name: str,
         item: Dict[str, Any],
         item_id: str,
+        drive_item: Optional[Dict[str, Any]],
+        folder_path: Optional[str],
         category: str,
         security_user_ids: Optional[List[str]],
         security_group_ids: Optional[List[str]],
@@ -985,7 +1040,8 @@ class SharePointIndexer:
     ) -> Dict[str, Any]:
         result = {"chunks": 0, "had_candidate": False}
 
-        drive_item = await self._graph_client.get_drive_item(session, site_id, collection_id, item_id)
+        if drive_item is None:
+            drive_item = await self._graph_client.get_drive_item(session, site_id, collection_id, item_id)
         if not drive_item:
             logging.debug(
                 f"[{self.cfg.indexer_name}][DOC-LIB] Drive item missing | itemId={item_id} collection={collection_name}"
@@ -995,6 +1051,14 @@ class SharePointIndexer:
         if "file" not in drive_item:
             logging.debug(
                 f"[{self.cfg.indexer_name}][DOC-LIB] Entry is not a file (likely folder) | itemId={item_id} collection={collection_name}"
+            )
+            return result
+
+        parent_folder_path = self._drive_item_parent_path(drive_item)
+        if not self._is_path_in_folder_scope(parent_folder_path, folder_path):
+            logging.debug(
+                f"[{self.cfg.indexer_name}][DOC-LIB] File outside configured folder scope | "
+                f"itemId={item_id} parentPath={parent_folder_path} folderPath={folder_path or ''}"
             )
             return result
 
@@ -1054,6 +1118,7 @@ class SharePointIndexer:
                 file_name,
                 file_web_url,
                 file_last_mod,
+                filepath=parent_folder_path,
                 category=category,
                 security_user_ids=security_user_ids,
                 security_group_ids=security_group_ids,
@@ -1070,6 +1135,7 @@ class SharePointIndexer:
             "had_candidate": True,
             "fileName": file_name,
             "webUrl": file_web_url,
+            "folderPath": parent_folder_path,
         })
         return result
 
@@ -1409,6 +1475,7 @@ class SharePointIndexer:
             fields_from_spec = None
 
         filter_from_spec: Optional[str] = (spec.get("filter") or "").strip() or None
+        folder_path_from_spec: Optional[str] = self._normalize_folder_path((spec.get("folderPath") or "").strip() or None)
 
         list_type_value = (spec.get("listType") or LIST_TYPE_GENERIC_LIST).strip()
         if list_type_value.lower() == LIST_TYPE_DOCUMENT_LIBRARY.lower():
@@ -1467,6 +1534,29 @@ class SharePointIndexer:
                 async with stats_lock:
                     stats.items_discovered += 1
                 item_id = str(item.get("id"))
+                preloaded_drive_item: Optional[Dict[str, Any]] = None
+
+                if is_document_library and folder_path_from_spec:
+                    preloaded_drive_item = await self._graph_client.get_drive_item(session, site_id, collection_id, item_id)
+                    if not preloaded_drive_item:
+                        logging.debug(
+                            f"[{self.cfg.indexer_name}][DOC-LIB] Skipping item with unresolved drive item for folder scope | "
+                            f"itemId={item_id} folderPath={folder_path_from_spec}"
+                        )
+                        async with stats_lock:
+                            stats.items_skipped_nochange += 1
+                        return
+
+                    parent_folder_path = self._drive_item_parent_path(preloaded_drive_item)
+                    if not self._is_path_in_folder_scope(parent_folder_path, folder_path_from_spec):
+                        logging.debug(
+                            f"[{self.cfg.indexer_name}][DOC-LIB] Skipping item outside folder scope before indexing | "
+                            f"itemId={item_id} parentPath={parent_folder_path} folderPath={folder_path_from_spec}"
+                        )
+                        async with stats_lock:
+                            stats.items_skipped_nochange += 1
+                        return
+
                 fields = item.get("fields", {}) or {}
                 content_fields = {k: v for k, v in fields.items()}
                 lookup_enrichment = await self._resolve_lookup_fields_for_item(
@@ -1552,47 +1642,71 @@ class SharePointIndexer:
                         local_chunks_for_item = 0
                         local_body_uploaded = False
                         local_item_had_candidate = False
+                        existing_body_mod: Optional[datetime] = None
                         # ---- BODY (item) ----
-                        logging.debug(f"[{self.cfg.indexer_name}][BODY] Checking body freshness | itemId={item_id} parentId={parent_item_id}")
-                        
-                        existing_body_mod = await self._get_body_lastmod_by_id(parent_item_id)
-                        need_body = _is_strictly_newer(last_mod, existing_body_mod)
-                        
-                        if need_body:
-                            local_item_had_candidate = True
-                            logging.debug(f"[{self.cfg.indexer_name}][BODY] Needs indexing | itemId={item_id} reason={'first-time' if existing_body_mod is None else 'newer'}")
-                            
-                            content = self._fields_to_text(content_fields, exclude=exclude_from_spec)
-                            logging.debug(f"[{self.cfg.indexer_name}][BODY] Generated content | itemId={item_id} contentLength={len(content)} excludedFields={exclude_from_spec}")
-                            
-                            emb = await self._embed(content) if content else []
-
-                            body_doc = self._doc_for_item(
-                                parent_id=parent_item_id,
-                                key_id=item_id,
-                                title=title,
-                                web_url=web_url,
-                                last_mod=last_mod,
-                                content=content,
-                                content_vec=emb,
-                                category=category_from_spec,
-                                security_user_ids=security_user_ids,
-                                security_group_ids=security_group_ids,
+                        if is_document_library and not self._index_doclib_item_body:
+                            logging.debug(
+                                f"[{self.cfg.indexer_name}][BODY] Skipped for document library item | "
+                                f"itemId={item_id} parentId={parent_item_id}"
+                            )
+                        else:
+                            logging.debug(
+                                f"[{self.cfg.indexer_name}][BODY] Checking body freshness | "
+                                f"itemId={item_id} parentId={parent_item_id}"
                             )
 
-                            # Only delete & re-upload if we actually need to refresh
-                            await self._delete_parent_docs(parent_item_id)
-                            await self._upload_docs([body_doc])
-                            local_chunks_for_item += 1
-                            local_body_uploaded = True
-                            logging.debug(f"[{self.cfg.indexer_name}][BODY] Successfully indexed | itemId={item_id} parentId={parent_item_id}")
-                        else:
-                            logging.debug(f"[{self.cfg.indexer_name}][BODY] Skipped (not newer) | itemId={item_id} incomingLastMod={last_mod.isoformat()} existingLastMod={existing_body_mod.isoformat() if existing_body_mod else 'None'}")
+                            existing_body_mod = await self._get_body_lastmod_by_id(parent_item_id)
+                            need_body = _is_strictly_newer(last_mod, existing_body_mod)
+
+                            if need_body:
+                                local_item_had_candidate = True
+                                logging.debug(
+                                    f"[{self.cfg.indexer_name}][BODY] Needs indexing | "
+                                    f"itemId={item_id} reason={'first-time' if existing_body_mod is None else 'newer'}"
+                                )
+
+                                content = self._fields_to_text(content_fields, exclude=exclude_from_spec)
+                                logging.debug(
+                                    f"[{self.cfg.indexer_name}][BODY] Generated content | "
+                                    f"itemId={item_id} contentLength={len(content)} excludedFields={exclude_from_spec}"
+                                )
+
+                                emb = await self._embed(content) if content else []
+
+                                body_doc = self._doc_for_item(
+                                    parent_id=parent_item_id,
+                                    key_id=item_id,
+                                    title=title,
+                                    web_url=web_url,
+                                    last_mod=last_mod,
+                                    content=content,
+                                    content_vec=emb,
+                                    category=category_from_spec,
+                                    security_user_ids=security_user_ids,
+                                    security_group_ids=security_group_ids,
+                                )
+
+                                # Only delete & re-upload if we actually need to refresh
+                                await self._delete_parent_docs(parent_item_id)
+                                await self._upload_docs([body_doc])
+                                local_chunks_for_item += 1
+                                local_body_uploaded = True
+                                logging.debug(
+                                    f"[{self.cfg.indexer_name}][BODY] Successfully indexed | "
+                                    f"itemId={item_id} parentId={parent_item_id}"
+                                )
+                            else:
+                                logging.debug(
+                                    f"[{self.cfg.indexer_name}][BODY] Skipped (not newer) | itemId={item_id} "
+                                    f"incomingLastMod={last_mod.isoformat()} "
+                                    f"existingLastMod={existing_body_mod.isoformat() if existing_body_mod else 'None'}"
+                                )
 
                         file_log.update({
                             "incomingLastMod": last_mod.isoformat(),
                             "existingLastMod": (existing_body_mod.isoformat() if existing_body_mod else None),
                             "freshnessReason": (
+                                "doclib-body-disabled" if (is_document_library and not self._index_doclib_item_body) else
                                 "first-time" if existing_body_mod is None else
                                 f"newer-by-ms={(last_mod - existing_body_mod).total_seconds()*1000:.0f}"
                             )
@@ -1615,6 +1729,8 @@ class SharePointIndexer:
                                 collection_name=collection_label,
                                 item=item,
                                 item_id=item_id,
+                                drive_item=preloaded_drive_item,
+                                folder_path=folder_path_from_spec,
                                 category=category_from_spec,
                                 security_user_ids=security_user_ids,
                                 security_group_ids=security_group_ids,
@@ -1627,6 +1743,7 @@ class SharePointIndexer:
                             if doclib_result.get("fileName"):
                                 file_log.setdefault("documentLibraryFileName", doclib_result.get("fileName"))
                                 file_log.setdefault("documentLibraryUrl", doclib_result.get("webUrl"))
+                                file_log.setdefault("documentLibraryFolderPath", doclib_result.get("folderPath"))
                         else:
                             logging.debug(
                                 f"[{self.cfg.indexer_name}][ATTACHMENT] Attachment processing disabled for generic lists | "
@@ -1702,6 +1819,7 @@ class SharePointIndexer:
                         totalChunks=int(result.get("chunks", 0)),
                         hadCandidate=bool(result.get("had_candidate")),
                         category=category_from_spec,
+                        folderPath=(folder_path_from_spec or ""),
                         webUrl=web_url,
                     )
                     logging.info(

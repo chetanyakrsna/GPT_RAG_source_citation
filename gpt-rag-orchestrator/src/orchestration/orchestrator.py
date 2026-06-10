@@ -93,8 +93,13 @@ class Orchestrator:
                 ))
             else:
                 partition_key = f"anonymous-{self.conversation_id}" if self.principal_id == "anonymous" else self.principal_id
+                # The conversations container is partitioned by /id, so the Cosmos
+                # partition-key value for reads MUST be the conversation id (writes via
+                # create/upsert already place the doc by its /id field). Using the
+                # principal-based value here looks in the wrong partition and always
+                # returns None, which silently breaks multi-turn chaining.
                 conversation = await self.database_client.get_document(
-                    self.database_container, self.conversation_id, partition_key=partition_key
+                    self.database_container, self.conversation_id, partition_key=self.conversation_id
                 )
                 if conversation is None:
                     logging.info(f"Conversation {self.conversation_id} not found; creating new conversation")
@@ -169,13 +174,13 @@ class Orchestrator:
         if not self.conversation_id:
             raise ValueError("Conversation ID is required to save feedback")
 
-        # Retrieve existing conversation document
-        # For anonymous users, use anonymous-{conversation_id} as partition key
-        partition_key = f"anonymous-{self.conversation_id}" if self.principal_id == "anonymous" else self.principal_id
+        # Retrieve existing conversation document.
+        # The conversations container is partitioned by /id, so the partition-key
+        # value for the read must be the conversation id (not the principal).
         conversation = await self.database_client.get_document(
             self.database_container,
             self.conversation_id,
-            partition_key=partition_key,
+            partition_key=self.conversation_id,
         )
         if conversation is None:
             raise ValueError(f"Conversation {self.conversation_id} not found in database")
