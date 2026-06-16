@@ -155,7 +155,7 @@ function Get-ConfigValue {
             --key $Key `
             --label $label `
             --auth-mode login `
-            --endpoint "https://appcs-$($env:RESOURCE_TOKEN).azconfig.io" `
+            --endpoint $APP_CONFIG_ENDPOINT `
             --query value -o tsv 2>&1
         $exitCode = $LASTEXITCODE
     } catch {
@@ -325,12 +325,19 @@ try {
 }
 
 #region Update Container App
-Write-Green "🔄 Updating container app…"
+# Force a revision template change (by updating the ROLLOUT_TS env var) so a new
+# revision is always created, even when the image tag is unchanged (e.g.
+# redeploying without a new git commit). We intentionally do NOT set a custom
+# --revision-suffix so that Azure keeps assigning sequential revision names
+# (e.g. --0000013, --0000014, …).
+$rolloutTs = Get-Date -Format "yyyyMMddHHmmss"
+Write-Green "🔄 Updating container app (ROLLOUT_TS: $rolloutTs)…"
 try {
     az containerapp update `
         --name $values.FRONTEND_APP_NAME `
         --resource-group $values.AZURE_RESOURCE_GROUP `
-        --image $fullImageName
+        --image $fullImageName `
+        --set-env-vars "ROLLOUT_TS=$rolloutTs"
     Write-Green "✅ Container app updated."
 } catch {
     $errMsg = $_.Exception.Message

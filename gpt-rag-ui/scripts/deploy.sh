@@ -161,8 +161,16 @@ echo -e "${GREEN}✅ Image pushed.${NC}"
 
 echo
 echo -e "${GREEN}🔄 Updating container app…${NC}"
+# Force a revision template change (by updating the ROLLOUT_TS env var) so a new
+# revision is always created, even when the image tag is unchanged (e.g.
+# redeploying without a new git commit). We intentionally do NOT set a custom
+# --revision-suffix so that Azure keeps assigning sequential revision names
+# (e.g. --0000013, --0000014, …).
+rolloutTs="$(date +%Y%m%d%H%M%S)"
+echo -e "${BLUE}ROLLOUT_TS: ${rolloutTs}${NC}"
 az containerapp update \
   --name "${frontendApp}" \
   --resource-group "${resourceGroupName}" \
-  --image "${containerRegistryLoginServer}/azure-gpt-rag/frontend:${tag}"
+  --image "${containerRegistryLoginServer}/azure-gpt-rag/frontend:${tag}" \
+  --set-env-vars "ROLLOUT_TS=${rolloutTs}"
 echo -e "${GREEN}✅ Container app updated.${NC}"
